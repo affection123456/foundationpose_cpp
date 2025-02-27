@@ -23,8 +23,6 @@ public:
                         const Eigen::Matrix3f& intrinsic,
                         const int input_poses_num,
                         const float crop_ratio = 1.2,
-                        const int input_image_H = 480,
-                        const int input_image_W = 640,
                         const int crop_window_H = 160,
                         const int crop_window_W = 160,
                         const float min_depth = 0.1,
@@ -34,6 +32,8 @@ public:
           void* rgb_on_device,
           void* depth_on_device,
           void* xyz_map_on_device,
+          int input_image_height,
+          int input_image_width,
           void* render_buffer,
           void* transf_buffer);
 
@@ -43,11 +43,15 @@ private:
                     const std::vector<Eigen::MatrixXf>& poses,
                     const std::vector<RowMajorMatrix>& tfs,
                     void* poses_on_device,
+                    int input_image_height,
+                    int input_image_width,
                     void* render_input_dst_ptr);
 
   bool TransfProcess(cudaStream_t cuda_stream,
                     void* rgb_on_device,
                     void* xyz_map_on_device,
+                    int input_image_height,
+                    int input_image_width,
                     const std::vector<RowMajorMatrix>& tfs,
                     void* poses_on_device,
                     void* transf_input_dst_ptr);
@@ -56,19 +60,27 @@ private:
 
   bool PrepareBuffer();
 
+  bool TransformVerticesOnCUDA(cudaStream_t stream,
+                  const std::vector<Eigen::MatrixXf>& tfs,
+                  float* output_buffer) ;
+
+  bool GeneratePoseClipOnCUDA(cudaStream_t stream,
+                      float* output_buffer,
+                      const std::vector<Eigen::MatrixXf>& poses, 
+                      const RowMajorMatrix& bbox2d, 
+                      const Eigen::Matrix3f& K, 
+                      int rgb_H, int rgb_W);
+
   bool NvdiffrastRender(cudaStream_t cuda_stream_, 
                         const std::vector<Eigen::MatrixXf>& poses, 
                         const Eigen::Matrix3f& K, 
-                        const Eigen::MatrixXf& bbox2d, 
+                        const RowMajorMatrix& bbox2d, 
                         int rgb_H, int rgb_W, int H, int W, 
                         nvcv::Tensor& flip_color_tensor, nvcv::Tensor& flip_xyz_map_tensor);
 
 private:
   //
   const int input_poses_num_;
-  // original image info
-  const int input_image_H_;
-  const int input_image_W_;
 
   // crop window size (model input size)
   const int crop_window_H_;
@@ -108,6 +120,7 @@ private:
   template<typename T>
   using DeviceBufferUniquePtrType = std::unique_ptr<T, std::function<void(T*)>>;
 
+  DeviceBufferUniquePtrType<float> vertices_device_ {nullptr};
   DeviceBufferUniquePtrType<float> texcoords_device_ {nullptr};
   DeviceBufferUniquePtrType<int32_t> mesh_faces_device_ {nullptr};
   DeviceBufferUniquePtrType<uint8_t> texture_map_device_ {nullptr};
