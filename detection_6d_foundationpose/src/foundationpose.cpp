@@ -293,6 +293,8 @@ bool FoundationPose::UploadDataToDevice(const cv::Mat     &rgb,
   // 根据depth生成xyz_map，并拷贝至device端
   CHECK_CUDA(cudaMalloc(&xyz_map_on_device, input_image_pixel_num * 3 * sizeof(float)),
              "[FoundationPose] RefinePreProcess malloc managed `xyz_map_on_device` failed!!!");
+  CHECK_CUDA(cudaMemset(xyz_map_on_device, 0, input_image_pixel_num * 3 * sizeof(float)),
+             "[FoundationPose] cudaMemset `xyz_map_on_device` failed!!!");
 
   convert_depth_to_xyz_map(static_cast<float *>(depth_on_device), input_image_height,
                            input_image_width, static_cast<float *>(xyz_map_on_device),

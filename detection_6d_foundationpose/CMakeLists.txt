@@ -14,7 +14,8 @@ set(THREADS_PREFER_PTHREAD_FLAG ON)
 
 # packages dep
 find_package(glog REQUIRED)
-find_package(OpenCV REQUIRED)
+# 仅依赖 core/imgproc/imgcodecs，避免拉入带 GDAL 的模块导致 libcurl 符号冲突
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
 find_package(Eigen3 REQUIRED)
 find_package(assimp REQUIRED)
 
