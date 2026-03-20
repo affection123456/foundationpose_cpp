@@ -2,4 +2,8 @@
 build
 models
 .vscode
-mustard0
+
+test_data/*
+!test_data/download.md
+!test_data/mustard0/
+!test_data/mustard0/**
