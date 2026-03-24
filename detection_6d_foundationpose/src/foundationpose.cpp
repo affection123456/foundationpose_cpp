@@ -3,6 +3,7 @@
 
 #include "foundationpose_render.hpp"
 #include "foundationpose_sampling.hpp"
+#include "foundationpose_sampling.cu.hpp"
 #include "foundationpose_utils.hpp"
 #include "foundationpose_decoder.cu.hpp"
 #include "foundationpose_utils.cu.hpp"
@@ -290,16 +291,57 @@ bool FoundationPose::UploadDataToDevice(const cv::Mat     &rgb,
                         input_image_pixel_num * sizeof(float), cudaMemcpyHostToDevice),
              "[FoundationPose] cudaMemcpy depth_host -> depth_device FAILED!!!");
 
-  // 根据depth生成xyz_map，并拷贝至device端
+  // Follow torch pipeline: erode + bilateral on depth, then depth->xyz.
+  cudaStream_t preprocess_stream = nullptr;
+  CHECK_CUDA(cudaStreamCreate(&preprocess_stream),
+             "[FoundationPose] create preprocess stream failed!!!");
+  auto stream_guard = std::shared_ptr<void>(preprocess_stream, [](void *stream_ptr) {
+    auto suc = cudaStreamDestroy(static_cast<cudaStream_t>(stream_ptr));
+    if (suc != cudaSuccess)
+    {
+      LOG(WARNING) << "[FoundationPose] Failed to destroy preprocess stream!";
+    }
+  });
+  (void)stream_guard;
+
+  void *erode_depth_on_device = nullptr;
+  void *bilateral_depth_on_device = nullptr;
+  CHECK_CUDA(cudaMalloc(&erode_depth_on_device, input_image_pixel_num * sizeof(float)),
+             "[FoundationPose] malloc `erode_depth_on_device` failed!!!");
+  CHECK_CUDA(cudaMalloc(&bilateral_depth_on_device, input_image_pixel_num * sizeof(float)),
+             "[FoundationPose] malloc `bilateral_depth_on_device` failed!!!");
+  auto func_release_tmp_cuda_buffer = [](void *ptr) {
+    auto suc = cudaFree(ptr);
+    if (suc != cudaSuccess)
+    {
+      LOG(WARNING) << "[FoundationPose] Failed to free tmp cuda memory!";
+    }
+  };
+  auto erode_depth_guard =
+      std::shared_ptr<void>(erode_depth_on_device, func_release_tmp_cuda_buffer);
+  auto bilateral_depth_guard =
+      std::shared_ptr<void>(bilateral_depth_on_device, func_release_tmp_cuda_buffer);
+  (void)erode_depth_guard;
+  (void)bilateral_depth_guard;
+
+  erode_depth(preprocess_stream, static_cast<float *>(depth_on_device),
+              static_cast<float *>(erode_depth_on_device), input_image_height, input_image_width);
+  bilateral_filter_depth(preprocess_stream, static_cast<float *>(erode_depth_on_device),
+                         static_cast<float *>(bilateral_depth_on_device), input_image_height,
+                         input_image_width);
+
+  // 根据预处理后的depth生成xyz_map，并拷贝至device端
   CHECK_CUDA(cudaMalloc(&xyz_map_on_device, input_image_pixel_num * 3 * sizeof(float)),
              "[FoundationPose] RefinePreProcess malloc managed `xyz_map_on_device` failed!!!");
   CHECK_CUDA(cudaMemset(xyz_map_on_device, 0, input_image_pixel_num * 3 * sizeof(float)),
              "[FoundationPose] cudaMemset `xyz_map_on_device` failed!!!");
 
-  convert_depth_to_xyz_map(static_cast<float *>(depth_on_device), input_image_height,
-                           input_image_width, static_cast<float *>(xyz_map_on_device),
-                           intrinsic_(0, 0), intrinsic_(1, 1), intrinsic_(0, 2), intrinsic_(1, 2),
-                           0.001);
+  convert_depth_to_xyz_map(preprocess_stream, static_cast<float *>(bilateral_depth_on_device),
+                           input_image_height, input_image_width,
+                           static_cast<float *>(xyz_map_on_device), intrinsic_(0, 0),
+                           intrinsic_(1, 1), intrinsic_(0, 2), intrinsic_(1, 2), 0.001);
+  CHECK_CUDA(cudaStreamSynchronize(preprocess_stream),
+             "[FoundationPose] sync preprocess stream failed!!!");
 
   // 输出device端指针，并注册析构过程
   auto func_release_cuda_buffer = [](void *ptr) {

@@ -5,7 +5,12 @@
 #include <glog/logging.h>
 #include <glog/log_severity.h>
 #include <Eigen/Dense>
+#include <Eigen/Geometry>
 #include <fstream>
+#include <cmath>
+#include <memory>
+
+#include "detection_6d_foundationpose/foundationpose.hpp"
 
 inline std::tuple<cv::Mat, cv::Mat, cv::Mat> ReadRgbDepthMask(const std::string &rgb_path,
                                                               const std::string &depth_path,
@@ -141,6 +146,72 @@ inline void draw3DBoundingBox(const Eigen::Matrix3f &intrinsic,
 
     cv::line(image, center_pt, cv::Point(eu, ev), axis_colors[k], 3);
   }
+}
+
+inline std::tuple<Eigen::Vector3f, Eigen::Quaternionf> PoseToTransQuat(const Eigen::Matrix4f &pose)
+{
+  Eigen::Vector3f translation = pose.block<3, 1>(0, 3);
+  Eigen::Matrix3f rotation_matrix = pose.block<3, 3>(0, 0);
+  Eigen::Quaternionf quaternion(rotation_matrix);
+  return {translation, quaternion};
+}
+
+inline void LogQuatCompare(const std::string        &id,
+                           const Eigen::Quaternionf &mesh_quat,
+                           const Eigen::Quaternionf &bbox_quat)
+{
+  Eigen::Quaternionf q_mesh = mesh_quat.normalized();
+  Eigen::Quaternionf q_bbox = bbox_quat.normalized();
+  Eigen::Quaternionf q_delta = (q_bbox * q_mesh.conjugate()).normalized();
+  float angle_deg = Eigen::AngleAxisf(q_delta).angle() * 180.0f / static_cast<float>(M_PI);
+
+  LOG(WARNING) << "[QuatCompare] frame=" << id
+               << " mesh=[x=" << q_mesh.x() << ", y=" << q_mesh.y() << ", z=" << q_mesh.z()
+               << ", w=" << q_mesh.w() << "]"
+               << " bbox=[x=" << q_bbox.x() << ", y=" << q_bbox.y() << ", z=" << q_bbox.z()
+               << ", w=" << q_bbox.w() << "]"
+               << " diff(abs)=[dx=" << std::fabs(q_bbox.x() - q_mesh.x())
+               << ", dy=" << std::fabs(q_bbox.y() - q_mesh.y())
+               << ", dz=" << std::fabs(q_bbox.z() - q_mesh.z())
+               << ", dw=" << std::fabs(q_bbox.w() - q_mesh.w()) << "]"
+               << " delta_angle_deg=" << angle_deg;
+}
+
+inline Eigen::Matrix4f ConvertPoseForOutput(
+    const Eigen::Matrix4f                                  &pose_in_mesh,
+    const std::shared_ptr<detection_6d::BaseMeshLoader>   &mesh_loader,
+    bool                                                    use_bbox_frame_output)
+{
+  if (use_bbox_frame_output)
+  {
+    return detection_6d::ConvertPoseMesh2BBox(pose_in_mesh, mesh_loader);
+  }
+  return pose_in_mesh;
+}
+
+inline Eigen::Vector3f ComputeMeshAabbDimension(
+    const std::shared_ptr<detection_6d::BaseMeshLoader> &mesh_loader)
+{
+  const auto &vertices = mesh_loader->GetMeshVertices();
+  CHECK(!vertices.empty()) << "mesh vertices are empty";
+
+  Eigen::Vector3f min_v = vertices[0];
+  Eigen::Vector3f max_v = vertices[0];
+  for (const auto &v : vertices)
+  {
+    min_v = min_v.cwiseMin(v);
+    max_v = max_v.cwiseMax(v);
+  }
+  return max_v - min_v;
+}
+
+inline Eigen::Matrix4f ConvertPoseMesh2AabbCenter(
+    const Eigen::Matrix4f                                &pose_in_mesh,
+    const std::shared_ptr<detection_6d::BaseMeshLoader> &mesh_loader)
+{
+  Eigen::Matrix4f tf_to_center = Eigen::Matrix4f::Identity();
+  tf_to_center.block<3, 1>(0, 3) = -mesh_loader->GetMeshModelCenter();
+  return pose_in_mesh * tf_to_center;
 }
 
 inline Eigen::Matrix3f ReadCamK(const std::string &cam_K_path)
